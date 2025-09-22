@@ -85,8 +85,19 @@ def layer_norm_gated_fwd_kernel(
         b_w = tl.load(w + o_d, mask=m_d).to(tl.float32)
     if HAS_BIAS:
         b_b = tl.load(b + o_d, mask=m_d).to(tl.float32)
-    b_x_hat = (b_x - b_mean[:, None]) * b_rstd[:, None] if not IS_RMS_NORM else b_x * b_rstd[:, None]
+
+    if not IS_RMS_NORM:
+        b_x_hat = (b_x - b_mean[:, None]) * b_rstd[:, None]
+    else:
+        b_x_hat = b_x * b_rstd[:, None]
+
     b_y = b_x_hat * b_w[None, :] if HAS_WEIGHT else b_x_hat
+
+    # Zero centering
+    if IS_RMS_NORM:
+        b_y_mean = tl.sum(b_y, axis=1) / D
+        b_y = b_y - b_y_mean[:, None]
+
     if HAS_BIAS:
         b_y = b_y + b_b[None, :]
 
@@ -266,6 +277,10 @@ def layer_norm_gated_bwd_kernel(
         b_xhat = tl.where(m_d[None, :], b_xhat, 0.0)
 
         b_y = b_xhat * b_w[None, :] if HAS_WEIGHT else b_xhat
+        # Zero centering
+        if IS_RMS_NORM:
+            b_y_mean = tl.sum(b_y, axis=1) / D
+            b_y = b_y - b_y_mean[:, None]
         if HAS_BIAS:
             b_y = b_y + b_b[None, :]
         if RECOMPUTE_OUTPUT:
@@ -291,6 +306,11 @@ def layer_norm_gated_bwd_kernel(
             b_dw += tl.where(m_t[:, None], b_dy * b_xhat, 0.0)
         if HAS_BIAS:
             b_db += tl.where(m_t[:, None], b_dy, 0.0)
+        # Zero centering
+        if IS_RMS_NORM:
+            b_dy_mean = tl.sum(b_dy, axis=1) / D
+            b_dy = b_dy - b_dy_mean[:, None]
+            b_wdy = b_dy * b_w if HAS_WEIGHT else b_dy
         if not IS_RMS_NORM:
             b_c1 = tl.sum(b_xhat * b_wdy, axis=1) / D
             b_c2 = tl.sum(b_wdy, axis=1) / D
